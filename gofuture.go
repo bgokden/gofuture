@@ -1,50 +1,56 @@
 package gofuture
 
 import (
+	"errors"
 	"reflect"
 	"time"
 )
 
 // Future type holds Result and state
-type Future struct {
+type Future[T any] struct {
 	Success          bool
 	Done             bool
-	Result           interface{}
-	InterfaceChannel <-chan interface{}
+	Result           T
+	InterfaceChannel <-chan T
+	err              error
+	errChannel       <-chan error
 }
 
 // Get return the result when available. This is a blocking call
-func (f *Future) Get() interface{} {
+func (f *Future[T]) Get() (T, error) {
 	if f.Done {
-		return f.Result
+		return f.Result, f.err
 	}
 	f.Result = <-f.InterfaceChannel
+	f.err = <-f.errChannel
 	f.Success = true
 	f.Done = true
-	return f.Result
+	return f.Result, f.err
 }
 
 // GetWithTimeout return the result until timeout.
-func (f *Future) GetWithTimeout(timeout time.Duration) interface{} {
+func (f *Future[T]) GetWithTimeout(timeout time.Duration) (T, error) {
 	if f.Done {
-		return f.Result
+		return f.Result, f.err
 	}
 	timeoutChannel := time.After(timeout)
 	select {
 	case res := <-f.InterfaceChannel:
 		f.Result = res
+		f.err = <-f.errChannel
 		f.Success = true
 		f.Done = true
 	case <-timeoutChannel:
-		f.Result = nil
+		f.Result = reflect.Zero(reflect.TypeOf(f.Result)).Interface().(T)
 		f.Done = true
 		f.Success = false
+		f.err = errors.New("timed out")
 	}
-	return f.Result
+	return f.Result, f.err
 }
 
 // FutureFunc creates a function that returns its response in future
-func FutureFunc(implem interface{}, args ...interface{}) *Future {
+func FutureFunc[T any](implem interface{}, args ...interface{}) *Future[T] {
 	valIn := make([]reflect.Value, len(args), len(args))
 
 	fnVal := reflect.ValueOf(implem)
@@ -52,18 +58,26 @@ func FutureFunc(implem interface{}, args ...interface{}) *Future {
 	for idx, elt := range args {
 		valIn[idx] = reflect.ValueOf(elt)
 	}
-	interfaceChannel := make(chan interface{}, 1)
-
+	interfaceChannel := make(chan T, 1)
+	errChannel := make(chan error, 1)
 	go func() {
 		res := fnVal.Call(valIn)
-		// Only one result is supported
-		interfaceChannel <- res[0].Interface()
+		// Up to two return values are supported
+		if len(res) > 1 {
+			// handle err
+			errChannel <- res[1].Interface().(error)
+		} else {
+			// handle err
+			errChannel <- nil
+		}
+		interfaceChannel <- res[0].Interface().(T)
 	}()
 
-	return &Future{
+	return &Future[T]{
 		Success:          false,
 		Done:             false,
-		Result:           nil,
+		Result:           reflect.Zero(reflect.TypeOf((*T)(nil)).Elem()).Interface().(T),
 		InterfaceChannel: interfaceChannel,
+		errChannel:       errChannel,
 	}
 }
