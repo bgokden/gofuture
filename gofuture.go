@@ -2,6 +2,7 @@ package gofuture
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"time"
 )
@@ -61,9 +62,17 @@ func FutureFunc[T any](implem interface{}, args ...interface{}) *Future[T] {
 	interfaceChannel := make(chan T, 1)
 	errChannel := make(chan error, 1)
 	go func() {
+		defer func() {
+			// handle the panic here
+			if r := recover(); r != nil {
+				errChannel <- fmt.Errorf("panic: %v", r)
+			}
+			close(interfaceChannel)
+			close(errChannel)
+		}()
 		res := fnVal.Call(valIn)
 		// Up to two return values are supported
-		if len(res) > 1 {
+		if len(res) > 1 && !res[1].IsNil() {
 			// handle err
 			errChannel <- res[1].Interface().(error)
 		} else {
